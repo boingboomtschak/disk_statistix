@@ -580,6 +580,7 @@ void App::DrawDupList() {
                         if (ImGui::IsMouseDoubleClicked(0)) Activate(m, Tile);
                     }
                     if (ImGui::IsItemHovered()) { listHovered_ = m; listHoverGroup_ = row.group; }
+                    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 8 * ImGui::GetStyle().FontScaleDpi)) dragRequest_ = m;
                     if (ImGui::IsItemClicked(1)) OpenContext(m);
                     ImGui::Unindent(indent);
                     ImGui::PopID();
@@ -651,13 +652,28 @@ void App::Delete(const std::vector<uint32_t>& nodes, bool permanent) {
         op->Release();
     }
 
-    // Drop whatever is actually gone; indices shift with each removal, so look each one up again.
-    size_t removed = 0;
     uint64_t freed = 0;
+    size_t removed = RemoveMissing(paths, freed);
+    if (removed == paths.size()) {
+        SetStatus((permanent ? "Deleted " : "Moved to Recycle Bin: ") + what + " (" + FmtBytes(bytes) + ")", false);
+    } else if (aborted) {
+        SetStatus("Delete cancelled after " + FmtCount(removed) + " of " + FmtCount(paths.size()) +
+                      " items. Partly removed folders won't update until you rescan.", true);
+    } else {
+        SetStatus("Deleted " + FmtCount(removed) + " of " + FmtCount(paths.size()) + " items (" + FmtBytes(freed) +
+                      "). The rest are in use or need admin; rescan to refresh.", true);
+    }
+}
+
+// Take items that no longer exist on disk out of the map. Indices shift with each removal, so each
+// path is looked up again. Returns how many were removed and adds their size to `freed`.
+size_t App::RemoveMissing(const std::vector<std::wstring>& paths, uint64_t& freed) {
+    Tree& t = *tree_;
+    size_t removed = 0;
     for (const std::wstring& p : paths) {
         if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
         uint32_t n = FindPath(p);
-        if (n == NONE) continue;
+        if (n == NONE || n == 0) continue;
         freed += t.nodes[n].size;
         RemoveFromTree(n);
         removed++;
@@ -667,15 +683,40 @@ void App::Delete(const std::vector<uint32_t>& nodes, bool permanent) {
         });
     }
     t.errors = t.errorList.size();
+    return removed;
+}
 
-    if (removed == paths.size()) {
-        SetStatus((permanent ? "Deleted " : "Moved to Recycle Bin: ") + what + " (" + FmtBytes(bytes) + ")", false);
-    } else if (aborted) {
-        SetStatus("Delete cancelled after " + FmtCount(removed) + " of " + FmtCount(paths.size()) +
-                      " items. Partly removed folders won't update until you rescan.", true);
-    } else {
-        SetStatus("Deleted " + FmtCount(removed) + " of " + FmtCount(paths.size()) + " items (" + FmtBytes(freed) +
-                      "). The rest are in use or need admin; rescan to refresh.", true);
+// Drag n (or the whole selection, if n is part of it) out to Explorer or another app. Uses the shell's
+// own data object, so anything that takes files dragged from Explorer takes them from here too.
+void App::DragOut(uint32_t n) {
+    std::vector<uint32_t> items = IsSelected(n) && sel_.size() > 1 ? sel_ : std::vector<uint32_t>{n};
+    std::vector<std::wstring> paths;
+    std::vector<PIDLIST_ABSOLUTE> pidls;
+    for (uint32_t i : items) {
+        paths.push_back(tree_->Path(i));
+        if (PIDLIST_ABSOLUTE p = ILCreateFromPathW(paths.back().c_str())) pidls.push_back(p);
+    }
+    IShellItemArray* arr = nullptr;
+    if (!pidls.empty() &&
+        SUCCEEDED(SHCreateShellItemArrayFromIDLists((UINT)pidls.size(), (PCIDLIST_ABSOLUTE_ARRAY)pidls.data(), &arr))) {
+        IDataObject* data = nullptr;
+        if (SUCCEEDED(arr->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data)))) {
+            video_.Stop();  // don't hold a file open that the drop target may want to move
+            DWORD effect = 0;
+            // Blocks until the drop (the shell draws the drag image and handles Esc / right-drag).
+            SHDoDragDrop(hwnd_, data, nullptr, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &effect);
+            data->Release();
+        }
+        arr->Release();
+    }
+    for (PIDLIST_ABSOLUTE p : pidls) ILFree(p);
+    ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);  // the drag loop swallowed the release
+
+    // A drop into another folder may have moved them away: update the map to match.
+    uint64_t freed = 0;
+    if (size_t moved = RemoveMissing(paths, freed)) {
+        sel_.clear();
+        SetStatus("Moved out of here: " + Plural(moved, "item") + " (" + FmtBytes(freed) + ")", false);
     }
 }
 
@@ -728,6 +769,7 @@ void App::Frame() {
     DupScanModal();
 
     if (!videoWanted_ && !video_.Path().empty()) video_.Stop();  // preview tooltip / dialog went away
+    if (dragRequest_ != NONE && tree_) DragOut(std::exchange(dragRequest_, NONE));
     video_.EndFrame();
     thumbs_->EndFrame();
     big_->EndFrame();
@@ -1302,6 +1344,11 @@ void App::DrawMap() {
     if (size.x < 10 || size.y < 10) return;
     ImGui::InvisibleButton("canvas", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool hov = ImGui::IsItemHovered();
+    // Pressed on an item and moved: drag it out of the app.
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 8 * s) && dragFrom_ != NONE) {
+        dragRequest_ = dragFrom_;
+        dragFrom_ = NONE;
+    }
     if (layoutRoot_ != viewRoot_ || layoutSize_.x != size.x || layoutSize_.y != size.y) Relayout(size);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1398,6 +1445,18 @@ void App::DrawMap() {
             hoverGroup_ = GroupOf(n);
     uint32_t litGroup = hoverGroup_ != NONE ? hoverGroup_ : listHoverGroup_;
 
+    // Folder whose name is hovered (its heading here, or its row in the side list): thick border around all its blocks.
+    uint32_t litFolder = hit >= 0 && onHeader ? rects_[hit].node
+                         : listHovered_ != NONE && t.nodes[listHovered_].isDir ? listHovered_ : NONE;
+    if (litFolder != NONE)
+        for (const Rect& r : rects_)
+            if (r.node == litFolder && r.kind == Folder) {
+                float th = std::max(3.0f, 3 * s);
+                ImVec2 a = p0 + ImVec2(r.x, r.y), b = a + ImVec2(r.w, r.h), in(th * 0.5f, th * 0.5f);
+                dl->AddRect(a + in, b - in, Rgb(theme::kBrightWhite), 0, 0, th);  // inset so the map edge can't clip it
+                break;
+            }
+
     // Highlights: selection, hover in the side list, copies of the hovered duplicate
     for (const Rect& r : rects_) {
         if (r.kind == Rest) continue;
@@ -1424,6 +1483,7 @@ void App::DrawMap() {
         } else if (ImGui::IsItemClicked(0)) {
             clickNode_ = r.node;
             clickZoomed_ = onHeader && !ctrl;
+            dragFrom_ = r.kind == Rest || clickZoomed_ ? NONE : r.node;  // a heading click zooms instead
             if (r.kind == Rest) {}  // a Rest block stands for many items, not its folder
             else if (ctrl) Select(r.node, true);  // Ctrl+click (headings too) adds to / removes from the selection
             else if (onHeader) Zoom(r.node);
@@ -1814,6 +1874,7 @@ void App::DrawSide() {
                     if (ImGui::IsMouseDoubleClicked(0)) Activate(c, Tile);
                 }
                 if (ImGui::IsItemHovered()) listHovered_ = c;
+                if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 8 * s)) dragRequest_ = c;
                 if (ImGui::IsItemClicked(1)) OpenContext(c);
                 ImGui::TableNextColumn();
                 ImGui::TextDisabled("%s  %5.1f%%", FmtBytes(n.size).c_str(), cur.size ? 100.0 * n.size / cur.size : 0.0);

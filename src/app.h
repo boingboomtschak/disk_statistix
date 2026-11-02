@@ -85,6 +85,8 @@ private:
     void Delete(const std::vector<uint32_t>& nodes, bool permanent);
     uint32_t FindPath(const std::wstring& path) const;
     void RemoveFromTree(uint32_t n);
+    size_t RemoveMissing(const std::vector<std::wstring>& paths, uint64_t& freed);
+    void DragOut(uint32_t n);
     void SwapSiblings(uint32_t a, uint32_t b);
     void SetStatus(std::string msg, bool error);
 
@@ -104,6 +106,7 @@ private:
     std::vector<std::wstring> history_;  // folders visited, as paths so deletes can't scramble them
     size_t histPos_ = 0;
     uint32_t clickNode_ = NONE;
+    uint32_t dragFrom_ = NONE, dragRequest_ = NONE;  // drag-out: item pressed on the map / item to drag now
     bool clickZoomed_ = false;
     bool ctxRest_ = false;
 

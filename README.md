@@ -16,10 +16,14 @@ build\Release\disk_statistix.exe
 
 - Pick a drive (or "Scan a folder...") in the startup dialog.
 - Files are coloured by extension; the legend is in the lower-right panel.
+- Hovering a folder's heading (or its row in the side list) draws a thick white border around all of its blocks.
 - **Click a folder heading** to open that folder. **Click** a block to select it; **Ctrl+click** to select
   several (Esc clears the selection).
 - **Double-click** a picture or video to preview it, any other file to open it with its default app (folders zoom in).
 - **Right-click** for Open / Preview / Show in Explorer / Zoom / Copy path.
+- **Drag** a block (or a row in the side lists) out of the window to drop the file into another app or an
+  Explorer folder, like dragging from Explorer. Dragging a selected item takes the whole selection. If the drop
+  moves files away (e.g. Shift-drag into another folder), they're removed from the map.
 - **Mouse back / forward** (or Alt+←/→, or the ← → buttons) step through the folders you've visited, like a browser.
   **Backspace**, Up, or the breadcrumb go to a parent folder.
 - **Del** (or right-click > Delete...) asks before moving the selected items to the Recycle Bin or deleting them

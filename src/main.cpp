@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <objbase.h>
+#include <ole2.h>
 #include <shellapi.h>
 
 #include <string>
@@ -101,7 +102,7 @@ static void LoadFonts(float size) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    OleInitialize(nullptr);  // COM (STA) plus OLE drag and drop
     ImGui_ImplWin32_EnableDpiAwareness();
     float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
 
@@ -191,6 +192,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     CleanupDeviceD3D();
     DestroyWindow(hwnd);
     UnregisterClassW(wc.lpszClassName, hInstance);
-    CoUninitialize();
+    OleUninitialize();
     return 0;
 }
