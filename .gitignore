@@ -1,0 +1,17 @@
+# CMake build trees (build/, build_test/, ...)
+/build*/
+/out/
+CMakeUserPresets.json
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Build leftovers
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.old.exe
